@@ -33,6 +33,9 @@ interface BleConnectionScreenProps {
   onSensorsConnected?: (sensorIds: string[]) => void;
 }
 
+const [analysisError, setAnalysisError] = useState<string | null>(null);
+const [isAnalyzing, setIsAnalyzing] = useState(false);
+
 const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
   navigation: _navigation,
   onSensorsConnected,
@@ -357,57 +360,38 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
   };
 
   const handleAnalyzeExercise = async () => {
-    console.log("🔬 [UI] handleAnalyzeExercise() called");
-    console.log("🔬 [UI] exerciseStartTime:", exerciseStartTime);
-    console.log("🔬 [UI] exerciseDataRef.current.size:", exerciseDataRef.current.size);
-    console.log("🔬 [UI] exerciseDataRef.current keys:", Array.from(exerciseDataRef.current.keys()));
+    console.log("🔬 [UI] handleAnalyzeExercise() chamado");
+    setAnalysisError(null);
+    setIsAnalyzing(true);
     
     if (!exerciseStartTime || exerciseDataRef.current.size === 0) {
-      console.error("❌ [UI] No data to analyze - exerciseStartTime or exerciseDataRef is empty");
-      Alert.alert("No Data", "No exercise data available to analyze.");
+      Alert.alert("Erro", "Sem dados de exercício para analisar.");
+      setIsAnalyzing(false);
       return;
     }
 
     try {
-      // Create device tag map
       const deviceTagMap = new Map<string, DeviceTag>();
       sensors.forEach((sensor) => {
         if (sensor.deviceTag && exerciseDataRef.current.has(sensor.id)) {
           deviceTagMap.set(sensor.id, sensor.deviceTag);
-          console.log(`🔬 [UI] Added sensor ${sensor.id} with DeviceTag ${sensor.deviceTag} (${getDeviceTagName(sensor.deviceTag)})`);
         }
       });
-
-      console.log(`🔬 [UI] deviceTagMap size: ${deviceTagMap.size}`);
-      console.log(`🔬 [UI] deviceTagMap entries:`, Array.from(deviceTagMap.entries()).map(([id, tag]) => ({ id, tag })));
 
       if (deviceTagMap.size === 0) {
-        console.error("❌ [UI] No sensors with device tags found");
-        Alert.alert("Error", "No sensors with device tags found. Please assign device tags to sensors.");
-        return;
+        throw new Error("Nenhum sensor com Device Tag configurada foi encontrado.");
       }
 
-      // Log exercise data summary
-      exerciseDataRef.current.forEach((data, sensorId) => {
-        console.log(`🔬 [UI] Sensor ${sensorId}: ${data.length} samples`);
-        if (data.length > 0) {
-          console.log(`🔬 [UI]   First sample:`, {
-            PacketCounter: data[0].PacketCounter,
-            SampleTimeFine: data[0].SampleTimeFine,
-            Euler_X: data[0].Euler_X,
-            Euler_Y: data[0].Euler_Y,
-            Euler_Z: data[0].Euler_Z,
-          });
-        }
+      console.log("🔬 [UI] Convertendo para ZIP...");
+      const zipBase64 = await convertBleDataToZip(
+        exerciseDataRef.current, 
+        deviceTagMap, 
+        exerciseStartTime
+      ).catch(err => {
+        throw new Error(`Erro na conversão ZIP: ${err.message}`);
       });
 
-      // Convert to ZIP
-      console.log("🔬 [UI] Converting exercise data to ZIP...");
-      const zipBase64 = await convertBleDataToZip(exerciseDataRef.current, deviceTagMap, exerciseStartTime);
-      console.log(`🔬 [UI] ZIP conversion complete, base64 length: ${zipBase64.length}`);
-      
-      // Analyze with local API
-      console.log("🔬 [UI] Starting analysis with local API...");
+      console.log("🔬 [UI] Iniciando análise local...");
       const localAnalysisApi = createLocalAnalysisApi();
       
       const result = await localAnalysisApi.analyzeZip(zipBase64, {
@@ -416,31 +400,27 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
         bodyHeight_m: 1.75,
         bodyMass_kg: 70,
         artificialDelayMs: 350,
+      }).catch(err => {
+        throw new Error(`Erro na AnalysisAPI: ${err.message}`);
       });
 
-      console.log("🔬 [UI] Analysis complete!");
-      console.log("🔬 [UI] Analysis result:", JSON.stringify(result, null, 2));
-      console.log("🔬 [UI] Missing sensors:", result.missingSensors);
-      console.log("🔬 [UI] Knee left ROM:", result.knee.left?.rom);
-      console.log("🔬 [UI] Knee right ROM:", result.knee.right?.rom);
-      console.log("🔬 [UI] Hip left ROM:", result.hip.left?.rom);
-      console.log("🔬 [UI] Hip right ROM:", result.hip.right?.rom);
-
       setBleAnalysisResult(result);
+      Alert.alert("Sucesso", "Análise concluída com sucesso!");
 
+    } catch (error: any) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : "Sem stack trace";
+      
+      console.error("❌ Erro Detalhado:", errorMessage);
+      
+      setAnalysisError(`${errorMessage}\n\nStack: ${errorStack.substring(0, 300)}...`);
+      
       Alert.alert(
-        "Analysis Complete",
-        `Analysis completed successfully!\n\nMissing sensors: ${result.missingSensors.length > 0 ? result.missingSensors.join(", ") : "None"}`
+        "Erro na Análise (Android)",
+        `Mensagem: ${errorMessage}\n\nVerifique o log vermelho na tela.`
       );
-    } catch (error) {
-      console.error("❌ [UI] Error analyzing exercise:", error);
-      console.error("❌ [UI] Error type:", typeof error);
-      console.error("❌ [UI] Error message:", error instanceof Error ? error.message : String(error));
-      console.error("❌ [UI] Error stack:", error instanceof Error ? error.stack : 'No stack');
-      Alert.alert(
-        "Analysis Error",
-        `Failed to analyze exercise: ${error instanceof Error ? error.message : String(error)}`
-      );
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
