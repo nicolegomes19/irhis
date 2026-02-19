@@ -102,10 +102,10 @@ const MovellaScreen = () => {
   const [lastCreatedSessionId, setLastCreatedSessionId] = useState<string | null>(null);
   // External API is the only analysis mode now
 
-  const refreshPatientProgress = useCallback(() => {
-    fetchPatients().catch(() => {});
+  const refreshPatientProgress = useCallback(async () => {
+    await fetchPatients();
     const pid = user?.role === "patient" ? user?.id : selectedPatientId;
-    if (pid) fetchAssignedExercises(pid).catch(() => {});
+    if (pid) await fetchAssignedExercises(pid);
   }, [fetchPatients, fetchAssignedExercises, user?.role, user?.id, selectedPatientId]);
 
   const createSegmentOrientation = (
@@ -363,7 +363,7 @@ const MovellaScreen = () => {
 
     if (session) {
       console.log("Session created successfully:", session.id);
-      refreshPatientProgress();
+      await refreshPatientProgress();
       if (user.role?.toLowerCase() === "patient" && session.id) {
         setLastCreatedSessionId(session.id);
         setShowFeedbackModal(true);

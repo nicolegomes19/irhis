@@ -48,7 +48,11 @@ const PatientDetailsCard: React.FC<PatientDetailsCardProps> = ({ details, onUpda
   const [showSexPicker, setShowSexPicker] = useState(false);
 
   useEffect(() => {
-    setEditableDetails(details);
+    setEditableDetails({
+      ...details,
+      // Store height in cm for editing (API returns meters)
+      height: details.height && details.height > 0 ? details.height * 100 : '',
+    });
   }, [details]);
 
 
@@ -76,12 +80,17 @@ const PatientDetailsCard: React.FC<PatientDetailsCardProps> = ({ details, onUpda
     }, []);
 
   const handleSave = () => {
-        const finalData = {
+        const age = parseInt(String(editableDetails.age), 10) || 0;
+        const weight = parseFloat(String(editableDetails.weight)) || 0;
+        const heightCm = parseFloat(String(editableDetails.height)) || 0;
+        const height = heightCm > 0 ? heightCm / 100 : 0; // API expects meters
+        const bmi = Number(editableDetails.bmi) || 0;
+        const finalData: Partial<PatientDetails> = {
             ...editableDetails,
-            Age: parseInt(String(editableDetails.age), 10) || 0,     
-            Weight: parseFloat(String(editableDetails.weight)) || 0,
-            Height: parseFloat(String(editableDetails.height)) || 0,
-            BMI: Number(editableDetails.bmi) || 0,
+            age,
+            weight,
+            height,
+            bmi,
         };
 
         onUpdateDetails(finalData);
@@ -139,7 +148,7 @@ const PatientDetailsCard: React.FC<PatientDetailsCardProps> = ({ details, onUpda
         </View>
         <DetailItem
             label="Height"
-            value={details.height}
+            value={details.height && details.height > 0 ? details.height * 100 : '—'}
             unit=" cm"
             isEditingValue={editableDetails.height}
             isEditing={isEditing}

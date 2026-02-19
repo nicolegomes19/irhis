@@ -213,10 +213,38 @@ export const PatientProvider: React.FC<{ children: ReactNode }> = ({
         [patientId]: { assigned, completed },
       }));
 
-      const allExercises: SessionAsExercise[] = [
-        ...assigned.map((s) => sessionToExercise(s, false)),
-        ...completed.map((s) => sessionToExercise(s, true)),
-      ];
+      // Group sessions by exercise (avoid duplicates when doing multiple sets)
+      const byExercise = new Map<string, { assigned: Session[]; completed: Session[] }>();
+      const key = (s: Session) =>
+        String((s as any).exerciseTypeId ?? (s as any).exerciseType ?? s.exerciseDescription ?? s.exerciseType ?? s.id);
+      for (const s of assigned) {
+        const k = key(s);
+        if (!byExercise.has(k)) byExercise.set(k, { assigned: [], completed: [] });
+        byExercise.get(k)!.assigned.push(s);
+      }
+      for (const s of completed) {
+        const k = key(s);
+        if (!byExercise.has(k)) byExercise.set(k, { assigned: [], completed: [] });
+        byExercise.get(k)!.completed.push(s);
+      }
+
+      const allExercises: SessionAsExercise[] = [];
+      for (const [k, { assigned: a, completed: c }] of byExercise) {
+        const completedCount = c.length;
+        const byTime = (x: Session, y: Session) =>
+          new Date((y as any).timeCreated ?? y.timeCreated ?? 0).getTime() -
+          new Date((x as any).timeCreated ?? x.timeCreated ?? 0).getTime();
+        const latestCompleted = [...c].sort(byTime)[0];
+        const latestAssigned = [...a].sort(byTime)[0];
+        const latestSession = latestCompleted ?? latestAssigned;
+        if (!latestSession) continue;
+        const targetSets = (latestSession as any).targetSets ?? (latestSession as any).target_sets ?? 3;
+        const ex = sessionToExercise(latestSession, completedCount > 0);
+        ex.id = k;
+        ex.completed = completedCount > 0 ? 1 : 0;
+        ex.targetSets = targetSets;
+        allExercises.push(ex);
+      }
       setAssignedExercises((prev) => ({
         ...prev,
         [patientId]: allExercises,
@@ -237,12 +265,20 @@ export const PatientProvider: React.FC<{ children: ReactNode }> = ({
   }, []);
 
   const fetchPatients = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
     if (fetchPatientsInProgress.current) return;
     fetchPatientsInProgress.current = true;
     setLoading(true);
     setDoctorDashboardError(null);
-    try {
+    setPatientDashboardError(null);
+    const timeoutMs = 25000;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("Request timed out")), timeoutMs)
+    );
+    const fetchTask = (async () => {
       if (user.role?.toLowerCase() === "doctor") {
         // #region agent log
         fetch('http://127.0.0.1:7244/ingest/3a24ed6e-2364-40cb-80fb-67e27d6c712f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'PatientContext.tsx:234',message:'fetchPatients doctor branch - calling getDoctorsMePatients',data:{userId:user.id},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});
@@ -360,6 +396,9 @@ export const PatientProvider: React.FC<{ children: ReactNode }> = ({
         setRecentActivity([]);
         setTrends(null);
       }
+    })();
+    try {
+      await Promise.race([fetchTask, timeoutPromise]);
     } catch (error) {
       // #region agent log
       fetch('http://127.0.0.1:7244/ingest/3a24ed6e-2364-40cb-80fb-67e27d6c712f',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'PatientContext.tsx:320',message:'fetchPatients error caught',data:{errorMessage:(error as Error)?.message,errorString:String(error),userRole:user?.role},timestamp:Date.now(),runId:'run1',hypothesisId:'B'})}).catch(()=>{});

@@ -1,0 +1,35 @@
+diff --git a/node_modules/react-native-ble-plx/android/src/main/java/com/bleplx/adapter/BleModule.java b/node_modules/react-native-ble-plx/android/src/main/java/com/bleplx/adapter/BleModule.java
+index 0000000..1111111 100644
+--- a/node_modules/react-native-ble-plx/android/src/main/java/com/bleplx/adapter/BleModule.java
++++ b/node_modules/react-native-ble-plx/android/src/main/java/com/bleplx/adapter/BleModule.java
+@@ -425,14 +425,21 @@
+       return;
+     }
+ 
+-    final RxBleDevice device = rxBleClient.getBleDevice(deviceIdentifier);
+-
+-    if (connectingDevices.removeSubscription(deviceIdentifier) && device != null) {
+-      onSuccessCallback.onSuccess(rxBleDeviceToDeviceMapper.map(device, null));
+-    } else {
+-      if (device == null) {
+-        onErrorCallback.onError(BleErrorUtils.deviceNotFound(deviceIdentifier));
+-      } else {
+-        onErrorCallback.onError(BleErrorUtils.deviceNotConnected(deviceIdentifier));
++    try {
++      final RxBleDevice device = rxBleClient.getBleDevice(deviceIdentifier);
++
++      if (connectingDevices.removeSubscription(deviceIdentifier) && device != null) {
++        onSuccessCallback.onSuccess(rxBleDeviceToDeviceMapper.map(device, null));
++      } else {
++        if (device == null) {
++          onErrorCallback.onError(BleErrorUtils.deviceNotFound(deviceIdentifier));
++        } else {
++          onErrorCallback.onError(BleErrorUtils.deviceNotConnected(deviceIdentifier));
++        }
+       }
++    } catch (Exception e) {
++      RxBleLog.e(e, "cancelDeviceConnection failed for " + deviceIdentifier);
++      onErrorCallback.onError(errorConverter.toError(e));
+     }
+   }
+ 

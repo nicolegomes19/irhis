@@ -16,6 +16,16 @@ interface StatCardProps {
     color: string;
 }
 
+function formatMetricValue(metric: { avgROM?: number | null; avgVelocity?: number | null; [k: string]: unknown }): string {
+    const rom = metric.avgROM ?? (metric as any).AvgROM;
+    const vel = metric.avgVelocity ?? (metric as any).AvgVelocity;
+    const romNum = typeof rom === 'number' ? rom : (typeof rom === 'string' ? parseFloat(rom) : NaN);
+    const velNum = typeof vel === 'number' ? vel : (typeof vel === 'string' ? parseFloat(vel) : NaN);
+    if (!Number.isNaN(romNum)) return `ROM: ${romNum.toFixed(1)}°`;
+    if (!Number.isNaN(velNum)) return `Velocity: ${velNum.toFixed(2)}`;
+    return '—';
+}
+
 const StatCard: React.FC<StatCardProps> = ({ icon, value, label, color }) => {
     const { colors } = useTheme();
     return (
@@ -88,12 +98,6 @@ const DoctorHomeScreen = ({ navigation }: any) => {
                         color={colors.success}
                     />
                     <StatCard
-                        icon="checkmark-circle"
-                        value={dashboardKpis.completedPatients ?? 0}
-                        label="Completed"
-                        color={colors.info}
-                    />
-                    <StatCard
                         icon="trending-up"
                         value={
                             dashboardKpis.totalPatients > 0 &&
@@ -115,7 +119,7 @@ const DoctorHomeScreen = ({ navigation }: any) => {
                         <View key={idx} style={styles.quickViewRow}>
                             <Text style={[styles.quickViewName, { color: colors.text }]} numberOfLines={1}>{metric.patientName}</Text>
                             <Text style={[styles.quickViewMeta, { color: colors.textSecondary }]}>
-                                {metric.joint} {metric.side ? `(${metric.side})` : ''} · {typeof metric.avgROM === 'number' ? `ROM: ${metric.avgROM.toFixed(1)}°` : typeof metric.avgVelocity === 'number' ? `Velocity: ${metric.avgVelocity.toFixed(2)}` : '—'}
+                                {metric.joint} {metric.side ? `(${metric.side})` : ''} · {formatMetricValue(metric)}
                             </Text>
                             {metric.date ? <Text style={[styles.quickViewComment, { color: colors.textSecondary }]} numberOfLines={1}>
                                 {new Date(metric.date).toLocaleDateString()}

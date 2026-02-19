@@ -1,11 +1,10 @@
-import React, { useEffect, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, FlatList } from 'react-native';
+import React, { useEffect, useCallback, useState } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, FlatList, RefreshControl } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '@theme/ThemeContext';
 import { useAuth } from '@context/AuthContext';
 import { usePatients } from '@context/PatientContext';
 import { useHealth } from '@context/HealthContext';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import ActivityRings from '@components/ActivityRings';
 import ChartCard from '@components/ChartCard';
@@ -20,19 +19,21 @@ const PatientHomeScreen = ({ navigation }: any) => {
     const patient = user ? patients[user.id] : null;
     const exercises = user ? (assignedExercises[user.id] || []) : [];
 
-    // Refresh data when screen comes into focus
-    useFocusEffect(
-        useCallback(() => {
-            if (user?.id) {
-                fetchPatients();
-                fetchAssignedExercises(user.id);
-                
-                if (refreshHealthData) {
-                    refreshHealthData();
-                }
-            }
-        }, [user?.id]) 
-    );
+    const [refreshing, setRefreshing] = useState(false);
+
+    const refreshDashboard = useCallback(async () => {
+        if (!user?.id) return;
+        setRefreshing(true);
+        try {
+            await fetchPatients();
+            if (refreshHealthData) refreshHealthData();
+        } finally {
+            setRefreshing(false);
+        }
+    }, [user?.id, fetchPatients, refreshHealthData]);
+
+    // Removed useFocusEffect - it was causing race with PatientContext's useEffect.
+    // Data loads via PatientContext when user is set; use pull-to-refresh to refresh.
 
     // Debug logging
     useEffect(() => {
@@ -52,7 +53,7 @@ const PatientHomeScreen = ({ navigation }: any) => {
                         <Text style={[styles.errorText, { color: colors.textSecondary }]}>{patientDashboardError}</Text>
                         <TouchableOpacity
                             style={[styles.retryButton, { backgroundColor: colors.primary }]}
-                            onPress={() => fetchPatients()}
+                            onPress={() => refreshDashboard()}
                         >
                             <Text style={styles.retryButtonText}>Try again</Text>
                         </TouchableOpacity>
@@ -63,7 +64,17 @@ const PatientHomeScreen = ({ navigation }: any) => {
         return (
             <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
                 <View style={styles.container}>
-                    <Text style={[styles.title, { color: colors.text }]}>Loading...</Text>
+                    <Text style={[styles.title, { color: colors.text }]}>
+                        {loading ? 'Loading...' : 'Loading dashboard...'}
+                    </Text>
+                    {!loading && (
+                        <TouchableOpacity
+                            style={[styles.retryButton, { backgroundColor: colors.primary, marginTop: 16 }]}
+                            onPress={() => fetchPatients()}
+                        >
+                            <Text style={styles.retryButtonText}>Retry</Text>
+                        </TouchableOpacity>
+                    )}
                 </View>
             </SafeAreaView>
         );
@@ -128,7 +139,16 @@ const PatientHomeScreen = ({ navigation }: any) => {
             style={[styles.safeArea, { backgroundColor: colors.background }]}
             edges={['bottom']}
         >
-            <ScrollView style={styles.container}>
+            <ScrollView
+                style={styles.container}
+                refreshControl={
+                    <RefreshControl
+                        refreshing={refreshing}
+                        onRefresh={refreshDashboard}
+                        tintColor={colors.primary}
+                    />
+                }
+            >
                 <View style={styles.header}>
                     <View>
                         <Text style={[styles.welcomeText, { color: colors.textSecondary }]}>Welcome back,</Text>
@@ -137,11 +157,11 @@ const PatientHomeScreen = ({ navigation }: any) => {
                     {/* Botão Connect Watch removido conforme ticket IRHIS-18 */}
                     <TouchableOpacity 
                         style={[styles.refreshButton, { backgroundColor: colors.card }]}
-                        onPress={refreshHealthData}
-                        disabled={isLoading}
+                        onPress={refreshDashboard}
+                        disabled={refreshing || isLoading}
                     >
                         <Ionicons 
-                            name={isLoading ? "sync" : "refresh-outline"} 
+                            name={refreshing || isLoading ? "sync" : "refresh-outline"} 
                             size={24} 
                             color={colors.text} 
                         />

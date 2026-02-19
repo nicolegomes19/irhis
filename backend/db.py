@@ -571,6 +571,19 @@ def update_patient_details(patient_id: str, details: dict) -> None:
     if "medicalHistory" in details:
         updates.append("MedicalHistory = :medical_history")
         params["medical_history"] = str(details["medicalHistory"])[:4096]
+    # Age: convert to BirthDate (birth_date = today - age years)
+    age_val = details.get("age") or details.get("Age")
+    if age_val is not None:
+        try:
+            age_int = int(float(age_val))
+            if 0 <= age_int <= 120:
+                from datetime import date
+                today = date.today()
+                birth_date = date(today.year - age_int, today.month, today.day)
+                updates.append("BirthDate = :birth_date")
+                params["birth_date"] = birth_date.strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            pass
 
     if not updates:
         return

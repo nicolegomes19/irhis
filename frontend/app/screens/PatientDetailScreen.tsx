@@ -160,17 +160,25 @@ const PatientDetailScreen = ({ route, navigation }: any) => {
   const handleUpdateDetails = async (details: Partial<PatientDetails>) => {
     if (!patientData) return;
     try {
+      const payload = {
+        age: details.age ?? 0,
+        weight: details.weight ?? 0,
+        height: details.height ?? 0,
+        bmi: details.bmi ?? 0,
+        sex: (details.sex ?? "").toString().toLowerCase(),
+        clinicalInfo: details.clinicalInfo ?? "",
+      };
       const updatedPatient = await patientService.updatePatientDetails(
         patientData.id,
-        details
+        payload
       );
       updatePatient(patientData.id, updatedPatient);
-      // Refresh patient data to ensure UI is updated
       await fetchPatients();
       Alert.alert("Success", "Patient details updated successfully.");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to update details:", error);
-      Alert.alert("Error", "Could not update patient details.");
+      const msg = error?.response?.data?.error || error?.response?.data?.message || error?.message || "Could not update patient details.";
+      Alert.alert("Error", msg);
     }
   };
 

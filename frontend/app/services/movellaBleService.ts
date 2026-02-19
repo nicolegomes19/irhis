@@ -4,7 +4,7 @@
  * Based on Movella DOT BLE Service Specification (Document XD0506P, Revision C)
  */
 
-import { Platform, PermissionsAndroid } from 'react-native';
+import { Platform, PermissionsAndroid, InteractionManager } from 'react-native';
 import { BleManager, Device, State, Characteristic } from 'react-native-ble-plx';
 import * as THREE from 'three';
 
@@ -254,9 +254,9 @@ export class MovellaBleService {
 
     const sensors = Array.from(this.sensors.values());
 
-    // Stop measurement and disconnect devices
-    for (const sensor of sensors) {
-      const sensorId = sensor.id;
+    // Stop measurement and disconnect devices sequentially (Android BLE struggles with concurrent ops)
+    for (let i = 0; i < sensors.length; i++) {
+      const sensorId = sensors[i].id;
 
       try {
         await this.stopMeasurement(sensorId);
@@ -280,6 +280,10 @@ export class MovellaBleService {
       } catch (error) {
         console.warn(`⚠️ [BLE] Error disconnecting sensor ${sensorId}:`, error);
       }
+
+      if (Platform.OS === "android" && i < sensors.length - 1) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
     }
 
     // Clear internal caches and state
@@ -290,6 +294,47 @@ export class MovellaBleService {
     this.stoppingSensors.clear();
     this.sensors.clear();
     this.scanSubscription = null;
+
+    // On Android, destroy and recreate BleManager to force native cleanup of all
+    // connections without going through cancelDeviceConnection (which crashes).
+    if (Platform.OS === "android" && this.bleManager) {
+      try {
+        console.log("🔄 [BLE] Destroying BleManager to force native cleanup...");
+
+        // Remove state listener before destroying to avoid callbacks during teardown
+        if (this.stateSubscription) {
+          try { this.stateSubscription.remove(); } catch (_) { /* already invalid */ }
+          this.stateSubscription = null;
+        }
+
+        this.bleManager.destroy();
+        this.bleManager = null;
+        this.isInitialized = false;
+
+        // Wait for native BLE stack to fully release resources
+        await new Promise((r) => setTimeout(r, 500));
+
+        // Create a fresh BleManager instance (the old global one is now destroyed)
+        const freshManager = new BleManager();
+        bleManagerInstance = freshManager;
+        BleManagerAvailable = true;
+        this.bleManager = freshManager;
+
+        // Let the native RxBleClient stabilize before any operations
+        await new Promise((r) => setTimeout(r, 200));
+
+        this.isInitialized = true;
+        this.setupEventListeners();
+        console.log("✅ [BLE] BleManager recreated after reset");
+      } catch (e) {
+        console.warn("⚠️ [BLE] Error recreating BleManager:", e);
+        // Leave service in a recoverable state: re-attempt on next scan
+        this.bleManager = null;
+        this.isInitialized = false;
+        BleManagerAvailable = false;
+        bleManagerInstance = null;
+      }
+    }
 
     console.log("✅ [BLE] Movella BLE service reset complete");
   }
@@ -365,42 +410,51 @@ export class MovellaBleService {
    */
   private async initializeBleManager(): Promise<void> {
     try {
-      // Check if JavaScript module is available
+      // Check if JavaScript module is available; attempt recovery if it was
+      // previously destroyed (e.g. after a failed reset())
       if (!BleManagerAvailable || !bleManagerInstance) {
-        const isExpoGo = BleManagerError?.message?.includes('createClient') || 
-                        BleManagerError?.message?.includes('null') ||
-                        !BleManagerError;
-        
-        const platform = Platform.OS === 'android' ? 'Android' : 'iOS';
-        const buildCommand = Platform.OS === 'android' 
-          ? 'npx eas build --profile development --platform android'
-          : 'npx eas build --profile development --platform ios';
-        const runCommand = Platform.OS === 'android'
-          ? 'npx expo run:android'
-          : 'npx expo run:ios --device';
-        
-        const errorMsg = isExpoGo
-          ? `❌ BLE not available in Expo Go!\n\n` +
-            `react-native-ble-plx requires a Development Build.\n\n` +
-            `To use Bluetooth on ${platform}:\n` +
-            `1. Create a development build:\n` +
-            `   cd frontend\n` +
-            `   ${buildCommand}\n\n` +
-            `2. Install the app on your device\n\n` +
-            `3. Run: npx expo start --dev-client\n\n` +
-            `Or build locally:\n` +
-            `   npx expo prebuild\n` +
-            `   ${runCommand}`
-          : `❌ BLE Manager initialization failed!\n\n` +
-            `Error: ${BleManagerError?.message || 'Unknown error'}\n\n` +
-            `Please ensure:\n` +
-            `1. You're using a Development Build (not Expo Go)\n` +
-            `2. Native modules are properly linked\n` +
-            `3. Run 'npx expo prebuild' and rebuild the app`;
-        
-        console.warn(`[BLE] ${errorMsg}`);
-        this.isInitialized = false;
-        return;
+        // Try to create a fresh instance as a recovery path
+        try {
+          const recovered = new BleManager();
+          bleManagerInstance = recovered;
+          BleManagerAvailable = true;
+          console.log("🔄 [BLE] Recovered BleManager after previous destroy");
+        } catch (recoveryError) {
+          const isExpoGo = BleManagerError?.message?.includes('createClient') || 
+                          BleManagerError?.message?.includes('null') ||
+                          !BleManagerError;
+          
+          const platform = Platform.OS === 'android' ? 'Android' : 'iOS';
+          const buildCommand = Platform.OS === 'android' 
+            ? 'npx eas build --profile development --platform android'
+            : 'npx eas build --profile development --platform ios';
+          const runCommand = Platform.OS === 'android'
+            ? 'npx expo run:android'
+            : 'npx expo run:ios --device';
+          
+          const errorMsg = isExpoGo
+            ? `❌ BLE not available in Expo Go!\n\n` +
+              `react-native-ble-plx requires a Development Build.\n\n` +
+              `To use Bluetooth on ${platform}:\n` +
+              `1. Create a development build:\n` +
+              `   cd frontend\n` +
+              `   ${buildCommand}\n\n` +
+              `2. Install the app on your device\n\n` +
+              `3. Run: npx expo start --dev-client\n\n` +
+              `Or build locally:\n` +
+              `   npx expo prebuild\n` +
+              `   ${runCommand}`
+            : `❌ BLE Manager initialization failed!\n\n` +
+              `Error: ${BleManagerError?.message || 'Unknown error'}\n\n` +
+              `Please ensure:\n` +
+              `1. You're using a Development Build (not Expo Go)\n` +
+              `2. Native modules are properly linked\n` +
+              `3. Run 'npx expo prebuild' and rebuild the app`;
+          
+          console.warn(`[BLE] ${errorMsg}`);
+          this.isInitialized = false;
+          return;
+        }
       }
       
       // Check Android permissions before proceeding
@@ -732,38 +786,68 @@ export class MovellaBleService {
     const sensor = this.sensors.get(sensorId);
     if (!sensor || !sensor.connected) return;
 
-    try {
-      // Stop measurement if running
-      await this.stopMeasurement(sensorId);
-      
-      // Remove notification subscription
-      const subscription = this.notificationSubscriptions.get(sensorId);
-      if (subscription) {
-        subscription.remove();
-        this.notificationSubscriptions.delete(sensorId);
-      }
+    const device = this.deviceCache.get(sensorId);
 
-      const messageSubscription = this.messageSubscriptions.get(sensorId);
-      if (messageSubscription) {
+    try {
+      if (Platform.OS === "android") {
+        // Android: the native cancelDeviceConnection triggers doFinally on the RxJava
+        // connection Observable which can crash the app. Instead, we:
+        // 1. Stop the measurement (write stop command to sensor)
+        // 2. Clean up JS-side subscriptions
+        // 3. Destroy and recreate BleManager to force-close all native connections
+        //    without going through the crashy cancelDeviceConnection path
+        this.stoppingSensors.add(sensorId);
         try {
-          messageSubscription.remove();
-        } catch (removeError) {
-          console.log(`ℹ️ [BLE] Message subscription removal note for ${sensorId}:`, removeError);
+          await this.stopMeasurement(sensorId);
+        } catch (stopErr) {
+          console.warn(`⚠️ [BLE] stopMeasurement before disconnect for ${sensorId}:`, stopErr);
         }
+        // Wait for the sensor to process the stop command
+        await new Promise((r) => setTimeout(r, 300));
+        // Clean up JS-side state
+        this.notificationSubscriptions.delete(sensorId);
         this.messageSubscriptions.delete(sensorId);
-      }
-      this.hardwareTagResolvers.delete(sensorId);
-      
-      // Get device from cache and disconnect
-      const device = this.deviceCache.get(sensorId);
-      if (device) {
-        await device.cancelConnection();
+        this.hardwareTagResolvers.delete(sensorId);
+        this.deviceCache.delete(sensorId);
+        // Skip cancelDeviceConnection entirely - it crashes the app.
+        // The native BLE connection will be cleaned up when the sensor times out
+        // or when the BleManager is destroyed/recreated on next full reset.
+        setTimeout(() => this.stoppingSensors.delete(sensorId), 1500);
+      } else {
+        await this.stopMeasurement(sensorId);
+        const subscription = this.notificationSubscriptions.get(sensorId);
+        if (subscription) {
+          subscription.remove();
+          this.notificationSubscriptions.delete(sensorId);
+        }
+        const messageSubscription = this.messageSubscriptions.get(sensorId);
+        if (messageSubscription) {
+          try {
+            messageSubscription.remove();
+          } catch (removeError) {
+            console.log(`ℹ️ [BLE] Message subscription removal note for ${sensorId}:`, removeError);
+          }
+          this.messageSubscriptions.delete(sensorId);
+        }
+        this.hardwareTagResolvers.delete(sensorId);
+        if (device) {
+          await device.cancelConnection();
+        }
       }
       
       sensor.connected = false;
       this.sensors.set(sensorId, sensor);
       
-      this.callbacks.onSensorDisconnected?.(sensorId);
+      // Defer callback (avoids Android crash - let native layer fully settle before React state updates)
+      if (Platform.OS === "android") {
+        InteractionManager.runAfterInteractions(() => {
+          setTimeout(() => {
+            this.callbacks.onSensorDisconnected?.(sensorId);
+          }, 400);
+        });
+      } else {
+        this.callbacks.onSensorDisconnected?.(sensorId);
+      }
       console.log(`✅ [BLE] Disconnected from sensor ${sensorId}`);
     } catch (error) {
       console.error(`❌ [BLE] Error disconnecting from sensor ${sensorId}:`, error);
@@ -1166,19 +1250,6 @@ export class MovellaBleService {
       // Mark sensor as stopping to ignore cancellation errors
       this.stoppingSensors.add(sensorId);
       
-      // Remove notification subscription first (this will trigger cancellation error, which we'll ignore)
-      const subscription = this.notificationSubscriptions.get(sensorId);
-      if (subscription) {
-        console.log(`🛑 [BLE] Removing notification subscription for ${sensorId}`);
-        try {
-          subscription.remove();
-        } catch (removeError) {
-          // Ignore errors when removing subscription
-          console.log(`ℹ️ [BLE] Subscription removal note for ${sensorId}:`, removeError);
-        }
-        this.notificationSubscriptions.delete(sensorId);
-      }
-      
       const serviceUUID = getFullUuid(MEASUREMENT_SERVICE_UUID);
       const charUUID = getFullUuid(MEASUREMENT_CONTROL_CHAR_UUID);
       
@@ -1189,12 +1260,33 @@ export class MovellaBleService {
       console.log(`📝 [BLE] Stop control message buffer (hex): ${bufferToHex(controlBuffer, 10)}`);
       console.log(`📝 [BLE] Writing stop control message to ${sensorId}...`);
       
-      // Write control characteristic
+      // Write stop command first so sensor stops streaming before we remove subscription (reduces Android crash risk)
       await device.writeCharacteristicWithResponseForService(
         serviceUUID,
         charUUID,
         base64Value
       );
+      
+      // On Android, wait for sensor to stop streaming
+      if (Platform.OS === "android") {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      
+      // Remove notification subscription. On Android, skip subscription.remove() - it can crash.
+      // Per react-native-ble-plx#1281: subscriptions are auto-cleaned when device disconnects.
+      const subscription = this.notificationSubscriptions.get(sensorId);
+      if (subscription) {
+        if (Platform.OS !== "android") {
+          try {
+            subscription.remove();
+          } catch (removeError) {
+            console.log(`ℹ️ [BLE] Subscription removal note for ${sensorId}:`, removeError);
+          }
+        } else {
+          console.log(`🛑 [BLE] Skipping subscription.remove() on Android (auto-cleanup on disconnect)`);
+        }
+        this.notificationSubscriptions.delete(sensorId);
+      }
       
       console.log(`✅ [BLE] Stopped measurement on ${sensorId}`);
     } catch (error) {
@@ -1307,22 +1399,54 @@ export class MovellaBleService {
           console.log(`📦 [BLE] Notification callback invoked for ${sensorId} at ${timestamp}`);
           
           if (error) {
-            // Ignore "Operation was cancelled" errors when intentionally stopping
+            // Ignore "Operation was cancelled" / disconnect errors when intentionally stopping
             const isCancellationError = 
               error.message?.includes('Operation was cancelled') ||
               error.message?.includes('cancelled') ||
               error.code === 'OperationCancelled';
+            const isDisconnectError =
+              error.message?.includes('Device disconnected') ||
+              error.message?.includes('disconnected') ||
+              error.message?.includes('Connection lost') ||
+              error.message?.includes('GATT_ERROR');
             
-            if (isCancellationError && this.stoppingSensors.has(sensorId)) {
-              // This is expected when stopping measurement intentionally
-              console.log(`ℹ️ [BLE] Notification cancelled for ${sensorId} (expected when stopping)`);
+            if ((isCancellationError || isDisconnectError) && this.stoppingSensors.has(sensorId)) {
+              console.log(`ℹ️ [BLE] Notification cancelled/disconnect for ${sensorId} (expected)`);
               return;
             }
             
-            console.error(`❌ [BLE] Notification error for ${sensorId}:`, error);
-            console.error(`❌ [BLE] Error message: ${error.message}`);
-            console.error(`❌ [BLE] Error code: ${error.code}`);
-            this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+            // Unexpected disconnect (e.g. user turned off sensor): update state and notify
+            if (isDisconnectError) {
+              const sensor = this.sensors.get(sensorId);
+              if (sensor?.connected) {
+                sensor.connected = false;
+                this.sensors.set(sensorId, sensor);
+                this.notificationSubscriptions.delete(sensorId);
+                this.messageSubscriptions.delete(sensorId);
+                const sid = sensorId;
+                const safeNotify = () => this.callbacks.onSensorDisconnected?.(sid);
+                if (Platform.OS === "android") {
+                  InteractionManager.runAfterInteractions(() => setTimeout(safeNotify, 300));
+                } else {
+                  safeNotify();
+                }
+              }
+              // Don't fire onError for disconnect - the onSensorDisconnected callback
+              // already handles the UI update. Showing an error alert is confusing.
+              console.log(`ℹ️ [BLE] Unexpected disconnect for ${sensorId} (handled via onSensorDisconnected)`);
+              return;
+            }
+            
+            // Genuine error (not disconnect-related): report to UI
+            const reportError = () => {
+              console.error(`❌ [BLE] Notification error for ${sensorId}:`, error);
+              this.callbacks.onError?.(error instanceof Error ? error : new Error(String(error)));
+            };
+            if (Platform.OS === "android") {
+              InteractionManager.runAfterInteractions(() => setTimeout(reportError, 100));
+            } else {
+              reportError();
+            }
             return;
           }
 

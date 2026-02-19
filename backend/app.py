@@ -479,32 +479,43 @@ def update_patient_details(current_user, patient_id):
         if not patient_data:
             return jsonify({"error": "Patient not found"}), 404
 
-        age = patient_data.get('Age') or 0
-        if patient_data.get('BirthDate'):
+        def _get(d, *keys):
+            for k in keys:
+                if k in d:
+                    return d[k]
+                for kk in d:
+                    if kk and str(kk).lower() == str(k).lower():
+                        return d[kk]
+            return None
+
+        age = _get(patient_data, 'Age', 'age') or 0
+        birth_date_val = _get(patient_data, 'BirthDate', 'birth_date')
+        if birth_date_val:
             try:
                 from datetime import datetime
-                birth_date = datetime.strptime(patient_data['BirthDate'], '%Y-%m-%d')
+                birth_date = datetime.strptime(str(birth_date_val), '%Y-%m-%d')
                 today = datetime.now()
                 age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
             except Exception:
                 pass
         sex_map = {'male': 'Male', 'female': 'Female'}
-        sex = sex_map.get(patient_data.get('Sex', '').lower(), 'Other')
-        height = patient_data.get('Height')
+        sex_raw = _get(patient_data, 'Sex', 'sex') or ''
+        sex = sex_map.get(str(sex_raw).lower(), 'Other')
+        height = _get(patient_data, 'Height', 'height')
         if height:
             height = height / 100
         patient = {
-            "id": patient_data.get('ID') or patient_id,
-            "name": f"{patient_data.get('FirstName', '')} {patient_data.get('LastName', '')}".strip() or patient_data.get('Email', ''),
+            "id": _get(patient_data, 'ID', 'id') or patient_id,
+            "name": f"{_get(patient_data, 'FirstName', 'firstname') or ''} {_get(patient_data, 'LastName', 'lastname') or ''}".strip() or _get(patient_data, 'Email', 'email') or '',
             "details": {
                 "age": age,
-                "birthDate": patient_data.get('BirthDate'),
+                "birthDate": birth_date_val,
                 "sex": sex,
                 "height": height or 0,
-                "weight": patient_data.get('Weight') or 0,
-                "bmi": patient_data.get('BMI') or 0,
-                "clinicalInfo": patient_data.get('MedicalHistory') or 'No information provided.',
-                "medicalHistory": patient_data.get('MedicalHistory'),
+                "weight": _get(patient_data, 'Weight', 'weight') or 0,
+                "bmi": _get(patient_data, 'BMI', 'bmi') or 0,
+                "clinicalInfo": _get(patient_data, 'MedicalHistory', 'medicalhistory') or 'No information provided.',
+                "medicalHistory": _get(patient_data, 'MedicalHistory', 'medicalhistory'),
             },
             "recovery_process": [],
             "feedback": [],
@@ -577,7 +588,12 @@ def get_doctors_me_metrics_summary(current_user):
         patient_name = f"{fname} {lname}".strip() or 'Unknown'
         metrics_rows = get_metrics_by_patient(patient_id, limit=20) or []
         movement_analyses = [
-            {"result": {"joint": r.get('Joint'), "side": r.get('Side'), "avgROM": r.get('AvgROM'), "avgVelocity": r.get('AvgVelocity')}, "timestamp": r.get('TimeCreated') or '', "exercise_type": r.get('ExerciseType') or 'general'}
+            {"result": {
+                "joint": r.get('Joint') or r.get('joint'),
+                "side": r.get('Side') or r.get('side'),
+                "avgROM": r.get('AvgROM') if r.get('AvgROM') is not None else r.get('avgROM'),
+                "avgVelocity": r.get('AvgVelocity') if r.get('AvgVelocity') is not None else r.get('avgVelocity'),
+            }, "timestamp": r.get('TimeCreated') or r.get('timeCreated') or '', "exercise_type": r.get('ExerciseType') or r.get('exerciseType') or 'general'}
             for r in metrics_rows
         ]
         

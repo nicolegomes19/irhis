@@ -12,6 +12,7 @@ import {
   Modal,
   Platform,
   ToastAndroid,
+  InteractionManager,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTheme } from "@theme/ThemeContext";
@@ -90,30 +91,43 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
   const exerciseDataRef = useRef<Map<string, FusionMeasurementData[]>>(new Map());
   const isExerciseActiveRef = useRef(false);
 
+  // Defer BLE callbacks to next JS tick to avoid Android crash (state updates from native BLE context)
+  const defer = (fn: () => void) => {
+    if (Platform.OS === "android") {
+      setTimeout(fn, 0);
+    } else {
+      fn();
+    }
+  };
+
   useEffect(() => {
     // Setup callbacks
     bleService.setCallbacks({
       onSensorDiscovered: (sensor) => {
-        setSensors((prev) => {
-          const exists = prev.find((s) => s.id === sensor.id);
-          if (exists) return prev;
-          return [...prev, sensor];
+        defer(() => {
+          setSensors((prev) => {
+            const exists = prev.find((s) => s.id === sensor.id);
+            if (exists) return prev;
+            return [...prev, sensor];
+          });
         });
       },
       onSensorConnected: (sensorId) => {
-        setConnecting((prev) => {
-          const next = new Set(prev);
-          next.delete(sensorId);
-          return next;
+        defer(() => {
+          setConnecting((prev) => {
+            const next = new Set(prev);
+            next.delete(sensorId);
+            return next;
+          });
+          updateSensorList();
+          checkAllConnected();
         });
-        updateSensorList();
-        checkAllConnected();
       },
-      onSensorDisconnected: (sensorId) => {
-        updateSensorList();
+      onSensorDisconnected: () => {
+        defer(updateSensorList);
       },
-      onBatteryLevel: (sensorId, level) => {
-        updateSensorList();
+      onBatteryLevel: () => {
+        defer(updateSensorList);
       },
       onFusionMeasurementData: (sensorId, data) => {
         console.log(`📥 [UI] onFusionMeasurementData callback invoked for ${sensorId}`);
@@ -214,11 +228,21 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
       // Cleanup
       bleService.stopScanning().catch(console.error);
       if (isExerciseActive) {
-        // Stop all measurements on unmount
+        // Stop measurements sequentially on unmount (Android BLE struggles with concurrent ops)
         const connectedSensors = bleService.getConnectedSensors();
-        connectedSensors.forEach((sensor) => {
-          bleService.stopMeasurement(sensor.id).catch(console.error);
-        });
+        const stopSequentially = async () => {
+          for (let i = 0; i < connectedSensors.length; i++) {
+            try {
+              await bleService.stopMeasurement(connectedSensors[i].id);
+            } catch (e) {
+              console.error(e);
+            }
+            if (Platform.OS === "android" && i < connectedSensors.length - 1) {
+              await new Promise((r) => setTimeout(r, 150));
+            }
+          }
+        };
+        stopSequentially();
       }
     };
   }, [bleService]);
@@ -302,15 +326,16 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
       
       console.log(`🎬 [UI] Exercise state initialized, startTime: ${startTime.toISOString()}`);
       
-      // Start measurement on all connected sensors
-      const startPromises = connectedSensors.map((sensor) => {
+      // Start measurement on sensors sequentially (Android BLE stack struggles with concurrent requests)
+      for (let i = 0; i < connectedSensors.length; i++) {
+        const sensor = connectedSensors[i];
         console.log(`🎬 [UI] Starting measurement on sensor: ${sensor.name || sensor.id.substring(0, 8)}`);
-        return bleService.startMeasurement(sensor.id, PayloadMode.EXTENDED_QUATERNION);
-      });
-      
-      console.log(`🎬 [UI] Waiting for all startMeasurement promises...`);
-      await Promise.all(startPromises);
-      console.log(`🎬 [UI] All startMeasurement promises resolved`);
+        await bleService.startMeasurement(sensor.id, PayloadMode.EXTENDED_QUATERNION);
+        if (Platform.OS === "android" && i < connectedSensors.length - 1) {
+          await new Promise((r) => setTimeout(r, 150));
+        }
+      }
+      console.log(`🎬 [UI] All startMeasurement completed`);
       
       // Set timeout to warn if no data received after 5 seconds
       setTimeout(() => {
@@ -337,33 +362,44 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
   };
 
   const handleStopExercise = async () => {
-    try {
-      const connectedSensors = bleService.getConnectedSensors();
-      
-      // Stop measurement on all sensors
-      const stopPromises = connectedSensors.map((sensor) =>
-        bleService.stopMeasurement(sensor.id)
-      );
-      
-      await Promise.all(stopPromises);
-      
-      setIsExerciseActive(false);
-      isExerciseActiveRef.current = false;
-      setCanAnalyze(exerciseDataRef.current.size > 0);
-      
-      const sensorCount = exerciseDataRef.current.size;
-      const message = sensorCount > 0
-        ? `Recorded data from ${sensorCount} sensor${sensorCount !== 1 ? 's' : ''}. You can now analyze the exercise.`
-        : "No data was recorded.";
-      // On Android, use Toast instead of Alert to avoid screen exit/focus issues
-      if (Platform.OS === "android") {
-        ToastAndroid.show(message, ToastAndroid.LONG);
-      } else {
-        Alert.alert("Exercise Stopped", message);
+    // Stop processing BLE data immediately to avoid race with subscription removal
+    setIsExerciseActive(false);
+    isExerciseActiveRef.current = false;
+    const sensorCount = exerciseDataRef.current.size;
+
+    const doStop = async () => {
+      try {
+        const connectedSensors = bleService.getConnectedSensors();
+        // Sequential loop instead of Promise.all (Android BLE stack struggles with concurrent requests)
+        for (let i = 0; i < connectedSensors.length; i++) {
+          await bleService.stopMeasurement(connectedSensors[i].id);
+          if (Platform.OS === "android" && i < connectedSensors.length - 1) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
+        }
+      } catch (error) {
+        console.error("Error stopping exercise:", error);
+        Alert.alert("Error", `Failed to stop exercise: ${error instanceof Error ? error.message : String(error)}`);
       }
-    } catch (error) {
-      console.error("Error stopping exercise:", error);
-      Alert.alert("Error", `Failed to stop exercise: ${error instanceof Error ? error.message : String(error)}`);
+      setCanAnalyze(sensorCount > 0);
+      if (Platform.OS === "android") {
+        try {
+          ToastAndroid.show(sensorCount > 0 ? "Exercise stopped. You can analyze." : "No data recorded.", ToastAndroid.SHORT);
+        } catch (_) { /* ignore */ }
+      } else {
+        Alert.alert(
+          "Exercise Stopped",
+          sensorCount > 0
+            ? `Recorded data from ${sensorCount} sensor${sensorCount !== 1 ? "s" : ""}. You can now analyze.`
+            : "No data was recorded."
+        );
+      }
+    };
+
+    if (Platform.OS === "android") {
+      setTimeout(() => doStop(), 50);
+    } else {
+      await doStop();
     }
   };
 
@@ -464,9 +500,11 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
             if (session) {
               console.log("🔬 [UI] Session saved to server:", session.id);
               setCanAnalyze(false);
-              // Refresh dashboard so patient card progress bar updates (same as ZIP flow)
-              fetchPatients().catch(() => {});
-              fetchAssignedExercises(patientId).catch(() => {});
+              // Refresh dashboard before alert so data is ready when user navigates back
+              await Promise.all([
+                fetchPatients(),
+                fetchAssignedExercises(patientId),
+              ]);
               Alert.alert(
                 "Analysis Complete",
                 `Results saved successfully!\n\nMissing sensors: ${result.missingSensors.length > 0 ? result.missingSensors.join(", ") : "None"}`
@@ -657,14 +695,31 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
   };
 
   const handleDisconnect = async (sensorId: string) => {
-    try {
-      await bleService.disconnectFromSensor(sensorId);
-      updateSensorList();
-    } catch (error) {
-      Alert.alert(
-        "Disconnect Error",
-        error instanceof Error ? error.message : "Failed to disconnect"
-      );
+    if (Platform.OS === "android") {
+      // Defer to next frame + after UI interactions (avoids native crash during button press)
+      InteractionManager.runAfterInteractions(() => {
+        setTimeout(async () => {
+          try {
+            await bleService.disconnectFromSensor(sensorId);
+            setTimeout(updateSensorList, 100);
+          } catch (error) {
+            Alert.alert(
+              "Disconnect Error",
+              error instanceof Error ? error.message : "Failed to disconnect"
+            );
+          }
+        }, 100);
+      });
+    } else {
+      try {
+        await bleService.disconnectFromSensor(sensorId);
+        updateSensorList();
+      } catch (error) {
+        Alert.alert(
+          "Disconnect Error",
+          error instanceof Error ? error.message : "Failed to disconnect"
+        );
+      }
     }
   };
 
@@ -1154,7 +1209,9 @@ const BleConnectionScreen: React.FC<BleConnectionScreenProps> = ({
           
           {!hasAllSensorsConnected(testingMode) && connectedCount > 0 && !testingMode && (
             <Text style={[styles.sensorWarning, { color: colors.warning || "#FF9500" }]}>
-              {5 - connectedCount} more sensor{5 - connectedCount > 1 ? 's' : ''} needed to start exercise
+              {connectedCount >= 5
+                ? "Assign tags to all sensors to start exercise"
+                : `${5 - connectedCount} more sensor${5 - connectedCount > 1 ? "s" : ""} needed to start exercise`}
             </Text>
           )}
             </View>

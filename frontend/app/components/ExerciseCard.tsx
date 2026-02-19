@@ -47,8 +47,9 @@ const ExerciseCard: React.FC<ExerciseCardProps> = ({
         // Get last session date
         const lastSession = sessions[0];
         if (lastSession) {
-          const date = new Date(lastSession.startTime);
-          setLastSessionDate(date.toLocaleDateString());
+          const ts = (lastSession as any).startTime ?? (lastSession as any).timeCreated ?? lastSession.timeCreated;
+          const date = new Date(ts);
+          setLastSessionDate(isNaN(date.getTime()) ? null : date.toLocaleDateString());
         }
       } else {
         setCompletionRate(0);
