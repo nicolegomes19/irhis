@@ -212,14 +212,6 @@ const DoctorHomeScreen = ({ navigation }: any) => {
                     ))}
                 </View>
             )}
-
-            <View style={styles.sectionHeader}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>Patient List</Text>
-                <TouchableOpacity onPress={() => navigation.navigate('PatientList')} style={styles.tableLink}>
-                    <Ionicons name="grid-outline" size={20} color={colors.primary} />
-                    <Text style={[styles.tableLinkText, { color: colors.primary }]}>View table</Text>
-                </TouchableOpacity>
-            </View>
         </>
     );
 
