@@ -1,8 +1,8 @@
-# IRHIS Mobile Application
+# TwinRehabPRO Mobile Application
 
 ## Overview
 
-IRHIS is a mobile health application designed for rehabilitation monitoring and movement analysis. The application enables healthcare professionals to monitor patient recovery progress through sensor-based movement analysis and provides patients with tools to track their rehabilitation exercises and health metrics.
+TwinRehabPRO is a mobile health application designed for rehabilitation monitoring and movement analysis. The application enables healthcare professionals to monitor patient recovery progress through sensor-based movement analysis and provides patients with tools to track their rehabilitation exercises and health metrics.
 
 The application supports real-time data collection from Movella DOT sensors via Bluetooth Low Energy (BLE), local analysis of movement data, and comprehensive patient management features for both doctors and patients.
 
