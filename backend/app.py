@@ -54,6 +54,16 @@ default_patient_details = {
 }
 
 
+def normalize_role(role):
+    return str(role or "").strip().lower()
+
+
+def ensure_patient_resource_access(current_user, patient_id, message="Unauthorized"):
+    if current_user.get('role') == 'patient' and current_user.get('id') != str(patient_id):
+        return jsonify({"error": message}), 403
+    return None
+
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -76,7 +86,8 @@ def token_required(f):
 
             current_user = {
                 'id': str(user_data.get('ID')),
-                'role': user_data.get('Role'),
+                'role': normalize_role(user_data.get('Role')),
+                '_role_display': user_data.get('Role'),
                 'email': user_data.get('Email'),
                 'name': f"{user_data.get('FirstName','')} {user_data.get('LastName','')}".strip()
             }
@@ -213,14 +224,20 @@ def signup():
 @app.route('/me', methods=['GET'])
 @token_required
 def get_current_user(current_user):
-    return jsonify(current_user)
+    response_user = {k: v for k, v in current_user.items() if k != '_role_display'}
+    response_user['role'] = current_user.get('_role_display') or (
+        current_user.get('role').title() if current_user.get('role') else current_user.get('role')
+    )
+    return jsonify(response_user)
 
 @app.route('/patients/<patient_id>', methods=['GET'])
 @token_required
 def get_patient(current_user, patient_id):
-    # Check if user has access to this patient
-    user_role_lower = current_user.get('role', '').lower() if current_user.get('role') else ''
-    is_doctor = user_role_lower == 'doctor'
+    forbidden = ensure_patient_resource_access(current_user, patient_id)
+    if forbidden:
+        return forbidden
+
+    is_doctor = current_user.get('role') == 'doctor'
     is_own_patient = current_user.get('id') == patient_id
     
     if not is_doctor and not is_own_patient:
@@ -265,7 +282,7 @@ def get_patient(current_user, patient_id):
             })
         # Doctor requesting patient: try to create patient record if user exists
         user_data = get_user_by_id(patient_id)
-        if user_data and user_data.get('Role') in ('Patient', 'patient'):
+        if user_data and normalize_role(user_data.get('Role')) == 'patient':
             try:
                 create_patient_record(patient_id, birth_date=None)
                 patient_data = get_patient_by_id(patient_id)
@@ -336,7 +353,7 @@ def get_patient(current_user, patient_id):
 @app.route('/doctors/<doctor_id>/patients', methods=['GET'])
 @token_required
 def get_doctor_patients(current_user, doctor_id):
-    if current_user['role'].lower() != 'doctor' or current_user['id'].lower() != doctor_id:
+    if current_user['role'] != 'doctor' or current_user['id'].lower() != doctor_id:
         return jsonify({"error": "Unauthorized"}), 403
 
     if not is_db_enabled():
@@ -357,7 +374,7 @@ def get_doctor_patients(current_user, doctor_id):
 @app.route('/doctors/me/patients', methods=['GET'])
 @token_required
 def get_doctors_me_patients(current_user):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
 
     if not is_db_enabled():
@@ -404,7 +421,7 @@ def get_doctors_me_patients(current_user):
 @app.route('/patients/unassigned', methods=['GET'])
 @token_required
 def get_unassigned_patients(current_user):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
 
     if not is_db_enabled():
@@ -428,7 +445,7 @@ def get_unassigned_patients(current_user):
 @app.route('/patients/<patient_id>/assign-doctor', methods=['POST'])
 @token_required
 def assign_doctor(current_user, patient_id):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Only doctors can assign patients"}), 403
 
     doctor_id = current_user['id']
@@ -442,7 +459,7 @@ def assign_doctor(current_user, patient_id):
 @app.route('/patients/<patient_id>/recovery-process', methods=['PUT'])
 @token_required
 def update_recovery_process(current_user, patient_id):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Only doctors can update exercises"}), 403
 
     if patient_id not in patients:
@@ -459,7 +476,7 @@ def update_recovery_process(current_user, patient_id):
 @app.route('/patients/<patient_id>/details', methods=['PUT'])
 @token_required
 def update_patient_details(current_user, patient_id):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Only doctors can update patient details"}), 403
 
     if not is_db_enabled():
@@ -528,8 +545,13 @@ def update_patient_details(current_user, patient_id):
 @app.route('/patients/<patient_id>/feedback', methods=['PUT'])
 @token_required
 def update_patient_feedback(current_user, patient_id):
-    if current_user['role'] == 'patient' and current_user['id'] != patient_id:
-        return jsonify({"error": "Patients can only update their own feedback"}), 403
+    forbidden = ensure_patient_resource_access(
+        current_user,
+        patient_id,
+        message="Patients can only update their own feedback",
+    )
+    if forbidden:
+        return forbidden
 
     if not is_db_enabled():
         return jsonify({"error": "Database not configured"}), 500
@@ -570,7 +592,7 @@ def update_patient_feedback(current_user, patient_id):
 @app.route('/doctors/me/metrics-summary', methods=['GET'])
 @token_required
 def get_doctors_me_metrics_summary(current_user):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
     
     doctor_id = current_user['id']
@@ -624,7 +646,7 @@ def get_doctors_me_metrics_summary(current_user):
 @app.route('/doctors/me/recent-activity', methods=['GET'])
 @token_required
 def get_doctors_me_recent_activity(current_user):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
     
     doctor_id = current_user['id']
@@ -709,7 +731,7 @@ def get_doctors_me_recent_activity(current_user):
 @app.route('/doctors/me/trends', methods=['GET'])
 @token_required
 def get_doctors_me_trends(current_user):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
     
     doctor_id = current_user['id']
@@ -800,8 +822,13 @@ def analyze_movement_data(current_user):
         exercise_type = request.form.get('exercise_type', 'general')
         
         # Validate patient access
-        if current_user['role'] == 'patient' and current_user['id'] != patient_id:
-            return jsonify({"error": "Patients can only analyze their own data"}), 403
+        forbidden = ensure_patient_resource_access(
+            current_user,
+            patient_id,
+            message="Patients can only analyze their own data",
+        )
+        if forbidden:
+            return forbidden
         
         if current_user['role'] == 'doctor' and patient_id:
             # Check if doctor has access to this patient
@@ -859,9 +886,9 @@ def analyze_movement_data(current_user):
 @token_required
 def get_patient_movement_analyses(current_user, patient_id):
     """Get movement analysis history for a patient"""
-    # Check if user has access to this patient
-    if current_user['role'] != 'doctor' and current_user['id'] != patient_id:
-        return jsonify({"error": "Unauthorized"}), 403
+    forbidden = ensure_patient_resource_access(current_user, patient_id)
+    if forbidden:
+        return forbidden
 
     patient = patients.get(patient_id)
     if not patient:
@@ -901,7 +928,7 @@ def test_movement_integration(current_user):
 @app.route('/patients/manual-registry', methods=['POST'])
 @token_required
 def register_patient_manual(current_user):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Acesso negado"}), 403
 
     data = request.json
@@ -936,13 +963,16 @@ def register_patient_manual(current_user):
 @app.route('/patients/<patient_id>/sessions', methods=['POST'])
 @token_required
 def assign_patients_sessions(current_user, patient_id):
-    if current_user['role'].lower() == 'doctor':
+    if current_user['role'] == 'doctor':
         doctor_id = current_user['id']
         relation = get_patient_doctor_relation(patient_id, doctor_id)
         if not relation:
             return jsonify({"error": "Patient not associated with this doctor"}), 403
         relation_id = relation['ID']
-    elif current_user['role'].lower() == 'patient' and current_user['id'] == patient_id:
+    elif current_user['role'] == 'patient':
+        forbidden = ensure_patient_resource_access(current_user, patient_id)
+        if forbidden:
+            return forbidden
         relation = fetch_one(
             """
             SELECT pd.ID FROM patientdoctor pd
@@ -982,6 +1012,10 @@ def assign_patients_sessions(current_user, patient_id):
 @app.route('/patients/<patient_id>/sessions', methods=['GET'])
 @token_required
 def get_patients_sessions(current_user, patient_id):
+    forbidden = ensure_patient_resource_access(current_user, patient_id)
+    if forbidden:
+        return forbidden
+
     try:
         sessions = get_patient_sessions(patient_id)
         
@@ -1000,8 +1034,12 @@ def get_session(current_user, session_id):
 
     if not session:
         return jsonify({"error": "Session not found"}), 404
+
+    forbidden = ensure_patient_resource_access(current_user, session.get('PatientID'))
+    if forbidden:
+        return forbidden
     
-    if current_user['role'].lower() == 'doctor':
+    if current_user['role'] == 'doctor':
         doctor_id = current_user['id']
         patient_id = session['PatientID'] 
 
@@ -1016,7 +1054,7 @@ def get_session(current_user, session_id):
 @token_required
 def update_session(current_user, session_id):
 
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
 
     data = request.json
@@ -1028,7 +1066,7 @@ def update_session(current_user, session_id):
     if not session:
         return jsonify({"error": "Session not found"}), 404
     
-    if current_user['role'].lower() == 'doctor':
+    if current_user['role'] == 'doctor':
         doctor_id = current_user['id']
         patient_id = session['PatientID'] 
 
@@ -1052,7 +1090,7 @@ def update_session(current_user, session_id):
 @app.route('/sessions/<session_id>', methods=['DELETE'])
 @token_required
 def delete_session(current_user, session_id):
-    if current_user['role'].lower() != 'doctor':
+    if current_user['role'] != 'doctor':
         return jsonify({"error": "Unauthorized"}), 403
 
     session = get_session_by_id(session_id)
@@ -1073,12 +1111,14 @@ def post_session_metrics(current_user, session_id):
         return jsonify({"error": "Session not found"}), 404
 
     patient_id = session.get('PatientID')
-    if current_user['role'].lower() == 'doctor':
+    if current_user['role'] == 'doctor':
         relation = get_patient_doctor_relation(patient_id, current_user['id'])
         if not relation:
             return jsonify({"error": "Patient not associated with this doctor"}), 403
-    elif current_user['id'] != patient_id:
-        return jsonify({"error": "Unauthorized"}), 403
+    else:
+        forbidden = ensure_patient_resource_access(current_user, patient_id)
+        if forbidden:
+            return forbidden
 
     data = request.json or {}
     if not data:
@@ -1116,6 +1156,9 @@ def post_session_metrics(current_user, session_id):
 @app.route('/patients/<patient_id>/metrics', methods=['GET'])
 @token_required
 def get_patient_metrics(current_user, patient_id):
+    forbidden = ensure_patient_resource_access(current_user, patient_id)
+    if forbidden:
+        return forbidden
 
     limit = min(request.args.get('limit', default=50, type=int), 50)
     
@@ -1132,6 +1175,10 @@ def get_specific_session_metrics(current_user, session_id):
     session = get_session_by_id(session_id)
     if not session:
         return jsonify({"error": "Session not found"}), 404
+
+    forbidden = ensure_patient_resource_access(current_user, session.get('PatientID'))
+    if forbidden:
+        return forbidden
 
     try:
         metrics = get_metrics_by_session(session_id)
@@ -1180,7 +1227,7 @@ def fix_user_role(current_user):
     # Or allow if the current user is a Doctor
     can_fix = (
         current_user['id'] == user['ID'] and user['Role'] == 'Patient'
-    ) or current_user['role'].lower() == 'doctor'
+    ) or current_user['role'] == 'doctor'
     
     if not can_fix:
         return jsonify({"error": "Unauthorized to change this user's role"}), 403
@@ -1272,8 +1319,9 @@ def get_exercise_types(current_user):
 @token_required
 def get_patient_exercises(current_user, patient_id):
     """Get assigned exercises for a patient."""
-    if current_user['role'].lower() != 'doctor' and current_user['id'] != patient_id:
-        return jsonify({"error": "Unauthorized"}), 403
+    forbidden = ensure_patient_resource_access(current_user, patient_id)
+    if forbidden:
+        return forbidden
     
     if not is_db_enabled():
         return jsonify({"error": "Database not configured"}), 500
@@ -1312,7 +1360,7 @@ def get_patient_exercises(current_user, patient_id):
 def assign_patient_exercise(current_user, patient_id):
     """Assign an exercise to a patient."""
     try:
-        if current_user['role'].lower() != 'doctor':
+        if current_user['role'] != 'doctor':
             return jsonify({"error": "Only doctors can assign exercises"}), 403
         
         if not is_db_enabled():
